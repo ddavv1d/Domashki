@@ -81,6 +81,12 @@ def admin_main_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("📄 Заказы и статусы", callback_data="admin_menu:orders"),
             ],
+            [
+                InlineKeyboardButton("📝 Создать заказ", callback_data="admin_menu:create_order"),
+            ],
+            [
+                InlineKeyboardButton("◀️ Выйти из админ-панели", callback_data="admin_menu:exit"),
+            ],
         ]
     )
 

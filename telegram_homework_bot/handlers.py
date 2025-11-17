@@ -1188,6 +1188,24 @@ async def handle_admin_menu_callback(
         )
         return
 
+    if action == "create_order":
+        # Send main menu as regular user
+        is_admin = await _user_is_admin(query.from_user.id, db)
+        await query.message.reply_text(
+            GREETING_MESSAGE,
+            reply_markup=main_menu_keyboard(is_admin=is_admin),
+        )
+        return
+
+    if action == "exit":
+        # Exit admin panel and return to main menu
+        is_admin = await _user_is_admin(query.from_user.id, db)
+        await query.edit_message_text(
+            "👋 Вы вышли из админ-панели.\n\nВыберите действие:",
+            reply_markup=main_menu_keyboard(is_admin=is_admin),
+        )
+        return
+
 
 async def handle_admin_manage_callback(
     update: Update,
