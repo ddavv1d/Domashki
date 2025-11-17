@@ -357,6 +357,8 @@ async def start_command(
     user = update.effective_user
     assert user is not None
 
+    LOGGER.info("Start command received from user %s (ID: %s)", user.username, user.id)
+
     context.user_data.clear()
     context.user_data.update(
         {
@@ -1497,25 +1499,15 @@ async def handle_fallback_message(
     if not user or not update.message:
         return
 
-    # Check if user has saved state in database
-    saved_state = await db.get_user_state(user.id)
+    # Clear any saved state
+    await db.clear_user_state(user.id)
+    context.user_data.clear()
 
-    if saved_state and saved_state.get("state"):
-        # User has a saved state, suggest continuing or restarting
-        await update.message.reply_text(
-            "🔄 <b>Восстановление сеанса</b>\n\n"
-            "Похоже, у вас был незавершенный заказ.\n\n"
-            "Введите /start чтобы начать заново, или продолжите с того места, где остановились.",
-            parse_mode=ParseMode.HTML,
-        )
-    else:
-        # No saved state, suggest starting fresh
-        await update.message.reply_text(
-            "👋 <b>Привет!</b>\n\n"
-            "Я помогу вам оформить заказ на выполнение учебной работы.\n\n"
-            "Нажмите /start чтобы начать.",
-            parse_mode=ParseMode.HTML,
-        )
+    # Send simple message to use /start
+    await update.message.reply_text(
+        "Используйте /start для оформления заказа",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def error_handler(
