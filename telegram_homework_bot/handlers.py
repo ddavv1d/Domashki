@@ -420,6 +420,76 @@ async def cancel_command(
     return ConversationHandler.END
 
 
+async def handle_back_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> int:
+    """Handle back button to return to previous step."""
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+
+    await query.answer()
+    user = query.from_user
+
+    # Get current state from database
+    saved_state = await db.get_user_state(user.id)
+    if not saved_state:
+        await query.edit_message_text("Используйте /start для оформления заказа")
+        return ConversationHandler.END
+
+    current_state_name = saved_state.get("state")
+
+    # Map current state to previous state
+    state_map = {
+        "ENTERING_SUBJECT": CHOOSING_TYPE,
+        "ENTERING_DESCRIPTION": ENTERING_SUBJECT,
+        "ENTERING_ADDITIONAL": ENTERING_DESCRIPTION,
+        "ENTERING_DEADLINE": ENTERING_ADDITIONAL,
+        "ENTERING_BUDGET": ENTERING_DEADLINE,
+        "CONFIRMING": ENTERING_BUDGET,
+    }
+
+    if current_state_name not in state_map:
+        # Already at first step, show main menu
+        is_admin = await _user_is_admin(user.id, db)
+        await query.edit_message_text(GREETING_MESSAGE, reply_markup=main_menu_keyboard(is_admin=is_admin))
+        await db.clear_user_state(user.id)
+        return ConversationHandler.END
+
+    previous_state = state_map[current_state_name]
+
+    # Return to previous step with appropriate prompt
+    if previous_state == CHOOSING_TYPE:
+        await query.edit_message_text(
+            f"Вы выбрали: {context.user_data.get('order_type_label', 'Не указано')}\n\n{PROMPT_SUBJECT}",
+            reply_markup=back_button_keyboard(),
+        )
+        await _persist_state(db, user.id, ENTERING_SUBJECT, context.user_data)
+        return ENTERING_SUBJECT
+    elif previous_state == ENTERING_SUBJECT:
+        await query.edit_message_text(PROMPT_DESCRIPTION, reply_markup=back_button_keyboard())
+        await _persist_state(db, user.id, ENTERING_DESCRIPTION, context.user_data)
+        return ENTERING_DESCRIPTION
+    elif previous_state == ENTERING_DESCRIPTION:
+        await query.edit_message_text(PROMPT_ADDITIONAL, reply_markup=back_button_keyboard())
+        await _persist_state(db, user.id, ENTERING_ADDITIONAL, context.user_data)
+        return ENTERING_ADDITIONAL
+    elif previous_state == ENTERING_ADDITIONAL:
+        await query.edit_message_text(PROMPT_DEADLINE, reply_markup=back_button_keyboard())
+        await _persist_state(db, user.id, ENTERING_DEADLINE, context.user_data)
+        return ENTERING_DEADLINE
+    elif previous_state == ENTERING_DEADLINE:
+        await query.edit_message_text(PROMPT_BUDGET, reply_markup=back_button_keyboard())
+        await _persist_state(db, user.id, ENTERING_BUDGET, context.user_data)
+        return ENTERING_BUDGET
+
+    return ConversationHandler.END
+
+
 async def handle_order_type_selection(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -443,7 +513,10 @@ async def handle_order_type_selection(
     context.user_data["order_type"] = order_type
     context.user_data["order_type_label"] = label
 
-    await query.edit_message_text(f"Вы выбрали: {label}\n\n{PROMPT_SUBJECT}")
+    await query.edit_message_text(
+        f"Вы выбрали: {label}\n\n{PROMPT_SUBJECT}",
+        reply_markup=back_button_keyboard(),
+    )
     await _persist_state(db, query.from_user.id, ENTERING_SUBJECT, context.user_data)
     return ENTERING_SUBJECT
 
@@ -460,7 +533,7 @@ async def handle_subject(
         return ENTERING_SUBJECT
 
     context.user_data["subject"] = message.text.strip()
-    await message.reply_text(PROMPT_DESCRIPTION)
+    await message.reply_text(PROMPT_DESCRIPTION, reply_markup=back_button_keyboard())
     await _persist_state(db, message.from_user.id, ENTERING_DESCRIPTION, context.user_data)
     return ENTERING_DESCRIPTION
 
@@ -508,7 +581,7 @@ async def handle_description(
         await message.reply_text("Пожалуйста, отправьте файл или опишите задачу текстом.")
         return ENTERING_DESCRIPTION
 
-    await message.reply_text(PROMPT_ADDITIONAL)
+    await message.reply_text(PROMPT_ADDITIONAL, reply_markup=back_button_keyboard())
     await _persist_state(db, message.from_user.id, ENTERING_ADDITIONAL, context.user_data)
     return ENTERING_ADDITIONAL
 
@@ -525,7 +598,7 @@ async def handle_additional(
         return ENTERING_ADDITIONAL
 
     context.user_data["additional_info"] = message.text.strip()
-    await message.reply_text(PROMPT_DEADLINE)
+    await message.reply_text(PROMPT_DEADLINE, reply_markup=back_button_keyboard())
     await _persist_state(db, message.from_user.id, ENTERING_DEADLINE, context.user_data)
     return ENTERING_DEADLINE
 
@@ -542,7 +615,7 @@ async def handle_deadline(
         return ENTERING_DEADLINE
 
     context.user_data["deadline"] = message.text.strip()
-    await message.reply_text(PROMPT_BUDGET)
+    await message.reply_text(PROMPT_BUDGET, reply_markup=back_button_keyboard())
     await _persist_state(db, message.from_user.id, ENTERING_BUDGET, context.user_data)
     return ENTERING_BUDGET
 
@@ -1360,44 +1433,72 @@ def build_conversation_handler(config: Config, db: Database) -> ConversationHand
                 CallbackQueryHandler(
                     partial(handle_order_type_selection, config=config, db=db),
                     pattern=r"^order_type:",
-                )
+                ),
+                CallbackQueryHandler(
+                    partial(handle_back_button, config=config, db=db),
+                    pattern=r"^order_back$",
+                ),
             ],
             ENTERING_SUBJECT: [
+                CallbackQueryHandler(
+                    partial(handle_back_button, config=config, db=db),
+                    pattern=r"^order_back$",
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     partial(handle_subject, config=config, db=db),
-                )
+                ),
             ],
             ENTERING_DESCRIPTION: [
+                CallbackQueryHandler(
+                    partial(handle_back_button, config=config, db=db),
+                    pattern=r"^order_back$",
+                ),
                 MessageHandler(
                     (filters.TEXT | filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE | filters.VIDEO | filters.Sticker.ALL | filters.VIDEO_NOTE)
                     & ~filters.COMMAND,
                     partial(handle_description, config=config, db=db),
-                )
+                ),
             ],
             ENTERING_ADDITIONAL: [
+                CallbackQueryHandler(
+                    partial(handle_back_button, config=config, db=db),
+                    pattern=r"^order_back$",
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     partial(handle_additional, config=config, db=db),
-                )
+                ),
             ],
             ENTERING_DEADLINE: [
+                CallbackQueryHandler(
+                    partial(handle_back_button, config=config, db=db),
+                    pattern=r"^order_back$",
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     partial(handle_deadline, config=config, db=db),
-                )
+                ),
             ],
             ENTERING_BUDGET: [
+                CallbackQueryHandler(
+                    partial(handle_back_button, config=config, db=db),
+                    pattern=r"^order_back$",
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     partial(handle_budget, config=config, db=db),
-                )
+                ),
             ],
             CONFIRMING: [
                 CallbackQueryHandler(
                     partial(handle_confirmation, config=config, db=db),
                     pattern=r"^order_confirm:",
-                )
+                ),
+                CallbackQueryHandler(
+                    partial(handle_back_button, config=config, db=db),
+                    pattern=r"^order_back$",
+                ),
             ],
         },
         fallbacks=[

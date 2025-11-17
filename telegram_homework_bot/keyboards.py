@@ -21,6 +21,13 @@ def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def back_button_keyboard() -> InlineKeyboardMarkup:
+    """Inline keyboard with back button."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("◀️ Назад", callback_data="order_back")]]
+    )
+
+
 def confirmation_keyboard() -> InlineKeyboardMarkup:
     """Inline keyboard for confirming or cancelling an order."""
     return InlineKeyboardMarkup(
@@ -28,7 +35,10 @@ def confirmation_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("✅ Отправить заказ", callback_data="order_confirm:yes"),
                 InlineKeyboardButton("❌ Отменить", callback_data="order_confirm:no"),
-            ]
+            ],
+            [
+                InlineKeyboardButton("◀️ Назад", callback_data="order_back"),
+            ],
         ]
     )
 
