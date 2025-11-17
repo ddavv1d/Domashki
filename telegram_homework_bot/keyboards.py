@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Iterable, List
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 MAIN_MENU_BUTTONS = [
@@ -42,4 +44,91 @@ def group_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def payment_request_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📤 Отправить квитанцию", f"payment_upload:{order_id}")]]
+    )
+
+
+def payment_review_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Подтверждено", f"payment_review:{order_id}:approve"),
+                InlineKeyboardButton("❌ Отклонить", f"payment_review:{order_id}:reject"),
+            ]
+        ]
+    )
+
+
+def admin_main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("👥 Управление администраторами", "admin_menu:admins"),
+            ],
+            [
+                InlineKeyboardButton("📊 Статистика заказов", "admin_menu:stats"),
+            ],
+            [
+                InlineKeyboardButton("📢 Отправить объявление", "admin_menu:broadcast"),
+            ],
+            [
+                InlineKeyboardButton("📄 Заказы и статусы", "admin_menu:orders"),
+            ],
+        ]
+    )
+
+
+def admin_remove_keyboard(admins: Iterable[tuple[int, str]]) -> InlineKeyboardMarkup:
+    buttons: List[List[InlineKeyboardButton]] = []
+    for user_id, label in admins:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    f"admin_remove:{user_id}",
+                )
+            ]
+        )
+    if not buttons:
+        buttons = [[InlineKeyboardButton("Нет доступных админов", "noop")]]
+    return InlineKeyboardMarkup(buttons)
+
+
+def admin_manage_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ Добавить администратора",
+                    "admin_add:start",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "➖ Удалить администратора",
+                    "admin_remove:start",
+                )
+            ],
+        ]
+    )
+
+
+def admin_orders_keyboard(orders: Iterable[int]) -> InlineKeyboardMarkup:
+    keyboard: List[List[InlineKeyboardButton]] = []
+    for order_id in orders:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"✅ Завершить #{order_id}",
+                    f"admin_complete:{order_id}",
+                )
+            ]
+        )
+    if not keyboard:
+        keyboard = [[InlineKeyboardButton("Нет заказов", "noop")]]
+    return InlineKeyboardMarkup(keyboard)
 

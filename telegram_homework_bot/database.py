@@ -5,7 +5,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,22 @@ class OrderRecord:
     executor_username: Optional[str]
     group_message_id: Optional[int]
     decline_reason: Optional[str]
+    payment_status: Optional[str]
+    payment_receipt_file_id: Optional[str]
+    payment_receipt_type: Optional[str]
+    payment_submitted_at: Optional[str]
+    payment_reviewed_by: Optional[int]
+    payment_reviewed_at: Optional[str]
+    payment_notes: Optional[str]
+    completed_at: Optional[str]
+
+
+@dataclass
+class AdminRecord:
+    user_id: int
+    username: Optional[str]
+    first_name: Optional[str]
+    last_name: Optional[str]
 
 
 class Database:
@@ -64,7 +80,15 @@ class Database:
                 executor_username TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 group_message_id INTEGER,
-                decline_reason TEXT
+                decline_reason TEXT,
+                payment_status TEXT DEFAULT 'not_requested',
+                payment_receipt_file_id TEXT,
+                payment_receipt_type TEXT,
+                payment_submitted_at TIMESTAMP,
+                payment_reviewed_by INTEGER,
+                payment_reviewed_at TIMESTAMP,
+                payment_notes TEXT,
+                completed_at TIMESTAMP
             );
             """
         )
@@ -79,6 +103,52 @@ class Database:
             );
             """
         )
+
+        await self._execute(
+            """
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                added_by INTEGER,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+        await self._execute(
+            """
+            INSERT OR IGNORE INTO admins (user_id, username, first_name, last_name, added_by)
+            VALUES (796537086, NULL, NULL, NULL, 0);
+            """
+        )
+
+        await self._execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                chat_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+
+        # Ensure newly required columns exist (idempotent)
+        await self._ensure_column(
+            "orders", "payment_status", "TEXT DEFAULT 'not_requested'"
+        )
+        await self._ensure_column("orders", "payment_receipt_file_id", "TEXT")
+        await self._ensure_column("orders", "payment_receipt_type", "TEXT")
+        await self._ensure_column("orders", "payment_submitted_at", "TIMESTAMP")
+        await self._ensure_column("orders", "payment_reviewed_by", "INTEGER")
+        await self._ensure_column("orders", "payment_reviewed_at", "TIMESTAMP")
+        await self._ensure_column("orders", "payment_notes", "TEXT")
+        await self._ensure_column("orders", "completed_at", "TIMESTAMP")
 
     async def create_order(self, data: Dict[str, Any]) -> int:
         """Insert a new order into the database and return its ID."""
@@ -214,6 +284,14 @@ class Database:
             executor_username=row["executor_username"],
             group_message_id=row["group_message_id"],
             decline_reason=row["decline_reason"],
+            payment_status=row["payment_status"],
+            payment_receipt_file_id=row["payment_receipt_file_id"],
+            payment_receipt_type=row["payment_receipt_type"],
+            payment_submitted_at=row["payment_submitted_at"],
+            payment_reviewed_by=row["payment_reviewed_by"],
+            payment_reviewed_at=row["payment_reviewed_at"],
+            payment_notes=row["payment_notes"],
+            completed_at=row["completed_at"],
         )
 
     async def update_order_status(
@@ -267,4 +345,195 @@ class Database:
         """Close the database connection."""
         async with self._lock:
             await asyncio.to_thread(self._conn.close)
+
+    async def upsert_user_profile(
+        self,
+        *,
+        user_id: int,
+        username: Optional[str],
+        first_name: Optional[str],
+        last_name: Optional[str],
+        chat_id: int,
+    ) -> None:
+        await self._execute(
+            """
+            INSERT INTO user_profiles (user_id, username, first_name, last_name, chat_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                last_name = excluded.last_name,
+                chat_id = excluded.chat_id,
+                updated_at = CURRENT_TIMESTAMP;
+            """,
+            (user_id, username, first_name, last_name, chat_id),
+        )
+
+    async def get_all_user_chat_ids(self) -> List[int]:
+        cursor = await self._execute("SELECT chat_id FROM user_profiles WHERE chat_id IS NOT NULL;")
+        return [row["chat_id"] for row in cursor.fetchall()]
+
+    async def list_admins(self) -> List[AdminRecord]:
+        cursor = await self._execute(
+            "SELECT user_id, username, first_name, last_name FROM admins ORDER BY added_at ASC;"
+        )
+        return [
+            AdminRecord(
+                user_id=row["user_id"],
+                username=row["username"],
+                first_name=row["first_name"],
+                last_name=row["last_name"],
+            )
+            for row in cursor.fetchall()
+        ]
+
+    async def is_admin(self, user_id: int) -> bool:
+        cursor = await self._execute("SELECT 1 FROM admins WHERE user_id = ?;", (user_id,))
+        return cursor.fetchone() is not None
+
+    async def add_admin(
+        self,
+        *,
+        user_id: int,
+        username: Optional[str],
+        first_name: Optional[str],
+        last_name: Optional[str],
+        added_by: int,
+    ) -> None:
+        await self._execute(
+            """
+            INSERT OR REPLACE INTO admins (user_id, username, first_name, last_name, added_by, added_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
+            """,
+            (user_id, username, first_name, last_name, added_by),
+        )
+
+    async def remove_admin(self, user_id: int) -> None:
+        await self._execute("DELETE FROM admins WHERE user_id = ?;", (user_id,))
+
+    async def get_order_stats(self) -> Dict[str, int]:
+        cursor = await self._execute(
+            """
+            SELECT status, COUNT(*) as total
+            FROM orders
+            GROUP BY status;
+            """
+        )
+        stats = {row["status"]: row["total"] for row in cursor.fetchall()}
+        return stats
+
+    async def list_orders(
+        self,
+        *,
+        statuses: Optional[Sequence[str]] = None,
+        limit: int = 10,
+    ) -> List[OrderRecord]:
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            query = f"""
+                SELECT * FROM orders
+                WHERE status IN ({placeholders})
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params: Tuple[Any, ...] = (*statuses, limit)
+        else:
+            query = """
+                SELECT * FROM orders
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params = (limit,)
+
+        cursor = await self._execute(query, params)
+        return [
+            OrderRecord(
+                order_id=row["order_id"],
+                user_id=row["user_id"],
+                username=row["username"],
+                first_name=row["first_name"],
+                last_name=row["last_name"],
+                order_type=row["order_type"],
+                subject=row["subject"],
+                description=row["description"],
+                file_id=row["file_id"],
+                file_type=row["file_type"],
+                additional_info=row["additional_info"],
+                deadline=row["deadline"],
+                budget=row["budget"],
+                status=row["status"],
+                executor_id=row["executor_id"],
+                executor_username=row["executor_username"],
+                group_message_id=row["group_message_id"],
+                decline_reason=row["decline_reason"],
+                payment_status=row["payment_status"],
+                payment_receipt_file_id=row["payment_receipt_file_id"],
+                payment_receipt_type=row["payment_receipt_type"],
+                payment_submitted_at=row["payment_submitted_at"],
+                payment_reviewed_by=row["payment_reviewed_by"],
+                payment_reviewed_at=row["payment_reviewed_at"],
+                payment_notes=row["payment_notes"],
+                completed_at=row["completed_at"],
+            )
+            for row in cursor.fetchall()
+        ]
+
+    async def save_payment_receipt(
+        self,
+        *,
+        order_id: int,
+        file_id: str,
+        file_type: str,
+        submitted_by: int,
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE orders
+            SET payment_status = 'submitted',
+                payment_receipt_file_id = ?,
+                payment_receipt_type = ?,
+                payment_submitted_at = CURRENT_TIMESTAMP
+            WHERE order_id = ? AND user_id = ?;
+            """,
+            (file_id, file_type, order_id, submitted_by),
+        )
+
+    async def update_payment_status(
+        self,
+        *,
+        order_id: int,
+        status: str,
+        reviewer_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE orders
+            SET payment_status = ?,
+                payment_reviewed_by = COALESCE(?, payment_reviewed_by),
+                payment_reviewed_at = CASE WHEN ? IS NULL THEN payment_reviewed_at ELSE CURRENT_TIMESTAMP END,
+                payment_notes = COALESCE(?, payment_notes)
+            WHERE order_id = ?;
+            """,
+            (status, reviewer_id, reviewer_id, notes, order_id),
+        )
+
+    async def mark_order_completed(self, order_id: int) -> None:
+        await self._execute(
+            """
+            UPDATE orders
+            SET status = 'completed',
+                completed_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?;
+            """,
+            (order_id,),
+        )
+
+    async def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        try:
+            await self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition};")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" in str(exc):
+                return
+            raise
 

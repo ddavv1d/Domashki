@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import html
+import html
 import logging
 import re
 from functools import partial
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import (
     ForceReply,
@@ -28,9 +29,15 @@ from telegram.ext import (
 from config import Config
 from database import Database, OrderRecord
 from keyboards import (
+    admin_main_keyboard,
+    admin_manage_keyboard,
+    admin_orders_keyboard,
+    admin_remove_keyboard,
     confirmation_keyboard,
     group_order_keyboard,
     main_menu_keyboard,
+    payment_request_keyboard,
+    payment_review_keyboard,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -111,8 +118,40 @@ DECLINE_REASON_TAKEN = (
 GENERIC_ERROR_MESSAGE = (
     "Произошла непредвиденная ошибка. Попробуйте ещё раз позже или начните заново с /start."
 )
+ADMIN_ONLY_MESSAGE = "У вас нет прав администратора."
+ADMIN_MENU_MESSAGE = "Добро пожаловать в панель администратора. Выберите действие:"
+ADMIN_BROADCAST_PROMPT = "Введите текст объявления. Оно будет отправлено всем пользователям бота."
+ADMIN_BROADCAST_DONE = "✅ Объявление разослано."
+ADMIN_ADD_PROMPT = "Введите ID пользователя, которого хотите сделать администратором."
+ADMIN_REMOVE_PROMPT = "Выберите администратора для удаления."
+ADMIN_ORDER_PROMPT = "Последние заказы. Нажмите на кнопку, чтобы отметить заказ выполненным."
+ORDER_COMPLETED_USER_MESSAGE = (
+    "✅ Ваш заказ #{order_id} отмечен как выполненный. Спасибо, что воспользовались ботом!"
+)
+ORDER_COMPLETED_GROUP_MESSAGE = "✅ Заказ #{order_id} отмечен как выполненный администратором."
+
+ADMIN_CARD_NUMBER = "7777888899990000"
+PAYMENT_INSTRUCTION_MESSAGE = (
+    "✅ Ваш заказ #{order_id} принят.\n\n"
+    "Пожалуйста, отправьте {budget} на карту {card}. После перевода нажмите кнопку ниже и отправьте квитанцию или скриншот об оплате."
+)
+PAYMENT_RECEIPT_PROMPT = (
+    "Отправьте квитанцию или скриншот оплаты для заказа #{order_id}. Можно прикрепить фото, документ или видео."
+)
+PAYMENT_RECEIPT_RECEIVED = (
+    "Спасибо! Мы отправили квитанцию на проверку. О результате сообщим дополнительно."
+)
+PAYMENT_APPROVED_USER_MESSAGE = (
+    "✅ Оплата по заказу #{order_id} подтверждена. Работа начнётся в ближайшее время."
+)
+PAYMENT_REJECTED_USER_MESSAGE = (
+    "❌ Оплата по заказу #{order_id} не подтверждена. Пожалуйста, проверьте данные и загрузите квитанцию повторно."
+)
 
 DECLINE_REASON_WAITLIST: Dict[int, Dict[str, Any]] = {}
+ADMIN_ACTION_KEY = "admin_action"
+ADMIN_ACTION_PAYLOAD_KEY = "admin_action_payload"
+PAYMENT_UPLOAD_ORDER_KEY = "payment_upload_order"
 
 BUDGET_PATTERN = re.compile(r"^\d+([.,]\d+)?$")
 
@@ -146,6 +185,8 @@ def format_group_message(order: OrderRecord, extra_block: Optional[str] = None) 
         f"💡 Доп. информация: {html.escape(additional_info)}\n"
         f"⏰ Дедлайн: {html.escape(deadline)}\n"
         f"💰 Бюджет: {html.escape(order.budget)}\n"
+        f"📌 Статус: {html.escape(order.status or '—')}\n"
+        f"💳 Оплата: {html.escape(order.payment_status or 'не запрошено')}\n"
         f"👤 Контакт студента:\n"
         f"   ID: {order.user_id}\n"
         f"   Username: {username_display}\n"
@@ -177,6 +218,25 @@ def _build_order_record_from_user_data(order_id: int, user_data: Dict[str, Any])
         executor_username=None,
         group_message_id=None,
         decline_reason=None,
+        payment_status="not_requested",
+        payment_receipt_file_id=None,
+        payment_receipt_type=None,
+        payment_submitted_at=None,
+        payment_reviewed_by=None,
+        payment_reviewed_at=None,
+        payment_notes=None,
+        completed_at=None,
+    )
+
+
+async def _user_is_admin(user_id: int, db: Database) -> bool:
+    return await db.is_admin(user_id)
+
+
+def _format_order_summary(order: OrderRecord) -> str:
+    return (
+        f"#{order.order_id}: {order.subject} — {order.status}"
+        f" (оплата: {order.payment_status or '—'})"
     )
 
 
@@ -188,6 +248,85 @@ async def _persist_state(
 ) -> None:
     state_name = STATE_NAMES.get(state) if state is not None else None
     await db.set_user_state(user_id=user_id, state=state_name, data=user_data)
+
+
+async def _send_payment_request_to_student(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    order: OrderRecord,
+) -> None:
+    message = PAYMENT_INSTRUCTION_MESSAGE.format(
+        order_id=order.order_id,
+        budget=order.budget,
+        card=ADMIN_CARD_NUMBER,
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=order.user_id,
+            text=message,
+            reply_markup=payment_request_keyboard(order.order_id),
+        )
+    except Forbidden:
+        LOGGER.warning("Cannot send payment request to user %s", order.user_id)
+    except TelegramError as exc:
+        LOGGER.error("Failed to send payment request for order %s: %s", order.order_id, exc)
+
+
+async def _send_file_to_chat(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    file_type: str,
+    file_id: str,
+    caption: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+) -> Message:
+    if file_type == "document":
+        return await context.bot.send_document(
+            chat_id=chat_id,
+            document=file_id,
+            caption=caption,
+            reply_markup=reply_markup,
+        )
+    if file_type == "photo":
+        return await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=file_id,
+            caption=caption,
+            reply_markup=reply_markup,
+        )
+    if file_type == "audio":
+        return await context.bot.send_audio(
+            chat_id=chat_id,
+            audio=file_id,
+            caption=caption,
+            reply_markup=reply_markup,
+        )
+    if file_type == "voice":
+        return await context.bot.send_voice(
+            chat_id=chat_id,
+            voice=file_id,
+            caption=caption,
+            reply_markup=reply_markup,
+        )
+    if file_type == "video":
+        return await context.bot.send_video(
+            chat_id=chat_id,
+            video=file_id,
+            caption=caption,
+            reply_markup=reply_markup,
+        )
+    if file_type == "video_note":
+        return await context.bot.send_video_note(
+            chat_id=chat_id,
+            video_note=file_id,
+        )
+    if file_type == "sticker":
+        return await context.bot.send_sticker(
+            chat_id=chat_id,
+            sticker=file_id,
+        )
+    raise ValueError(f"Unsupported file type: {file_type}")
 
 
 async def start_command(
@@ -210,6 +349,16 @@ async def start_command(
             "last_name": user.last_name,
         }
     )
+
+    chat = update.effective_chat
+    if chat:
+        await db.upsert_user_profile(
+            user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            chat_id=chat.id,
+        )
 
     if update.message:
         await update.message.reply_text(GREETING_MESSAGE, reply_markup=main_menu_keyboard())
@@ -501,6 +650,179 @@ async def _forward_attachment_if_any(
         LOGGER.error("Unable to forward attachment for order %s: %s", order.order_id, exc)
 
 
+async def handle_payment_upload_request(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    await query.answer()
+    _, order_id_str = query.data.split(":")
+    order_id = int(order_id_str)
+    order = await db.get_order(order_id)
+    user = query.from_user
+
+    if not order or order.user_id != user.id:
+        await query.answer("Этот заказ вам не принадлежит.", show_alert=True)
+        return
+
+    if order.status not in ("awaiting_payment", "payment_review"):
+        await query.answer("По этому заказу не требуется квитанция.", show_alert=True)
+        return
+
+    context.user_data[PAYMENT_UPLOAD_ORDER_KEY] = order_id
+    await query.message.reply_text(PAYMENT_RECEIPT_PROMPT.format(order_id=order_id))
+
+
+async def handle_payment_receipt_submission(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    message = update.message
+    if not message or not message.from_user:
+        return
+
+    # работаем только в приватных чатах
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
+
+    order_id = context.user_data.get(PAYMENT_UPLOAD_ORDER_KEY)
+    if not order_id:
+        return
+
+    file_id, file_type = _extract_file_info(message)
+    if not file_id or not file_type:
+        await message.reply_text("Прикрепите файл или фото квитанции.")
+        return
+
+    order = await db.get_order(order_id)
+    if not order or order.user_id != message.from_user.id:
+        await message.reply_text("Не удалось сопоставить заказ. Нажмите кнопку ещё раз.")
+        context.user_data.pop(PAYMENT_UPLOAD_ORDER_KEY, None)
+        return
+
+    await db.save_payment_receipt(
+        order_id=order_id,
+        file_id=file_id,
+        file_type=file_type,
+        submitted_by=message.from_user.id,
+    )
+    await db.update_order_status(order_id, "payment_review")
+    await db.update_payment_status(
+        order_id=order_id,
+        status="submitted",
+    )
+    context.user_data.pop(PAYMENT_UPLOAD_ORDER_KEY, None)
+    await message.reply_text(PAYMENT_RECEIPT_RECEIVED)
+
+    # Отправляем файл в группу
+    caption = (
+        f"💳 Квитанция по заказу #{order_id}\n"
+        f"Студент: @{message.from_user.username or message.from_user.full_name}"
+    )
+
+    try:
+        await _send_file_to_chat(
+            context=context,
+            chat_id=config.group_chat_id,
+            file_type=file_type,
+            file_id=file_id,
+            caption=caption,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        LOGGER.error("Failed to send receipt file to group: %s", exc)
+
+    review_text = (
+        f"Проверьте оплату заказа #{order_id}. "
+        "Если деньги поступили, подтвердите квитанцию."
+    )
+    await context.bot.send_message(
+        chat_id=config.group_chat_id,
+        text=review_text,
+        reply_markup=payment_review_keyboard(order_id),
+    )
+
+
+async def handle_payment_review_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    await query.answer()
+    _, order_id_str, decision = query.data.split(":")
+    order_id = int(order_id_str)
+    user = query.from_user
+
+    if not await _user_is_admin(user.id, db):
+        await query.answer(ADMIN_ONLY_MESSAGE, show_alert=True)
+        return
+
+    order = await db.get_order(order_id)
+    if not order:
+        await query.answer(ORDER_NOT_FOUND_MESSAGE, show_alert=True)
+        return
+
+    if decision == "approve":
+        await db.update_payment_status(
+            order_id=order_id,
+            status="confirmed",
+            reviewer_id=user.id,
+        )
+        await db.update_order_status(order_id, "in_progress")
+        decision_text = "✅ Оплата подтверждена администратором."
+        user_text = PAYMENT_APPROVED_USER_MESSAGE.format(order_id=order_id)
+    else:
+        await db.update_payment_status(
+            order_id=order_id,
+            status="rejected",
+            reviewer_id=user.id,
+        )
+        await db.update_order_status(order_id, "awaiting_payment")
+        decision_text = "❌ Оплата не подтверждена. Требуется новая квитанция."
+        user_text = PAYMENT_REJECTED_USER_MESSAGE.format(order_id=order_id)
+        await _send_payment_request_to_student(context=context, order=order)
+
+    # обновляем сообщение в группе
+    try:
+        if query.message and query.message.caption:
+            await query.edit_message_caption(
+                caption=f"{query.message.caption}\n\n{decision_text}",
+                reply_markup=None,
+            )
+        else:
+            await query.edit_message_text(
+                text=f"{query.message.text}\n\n{decision_text}",
+                reply_markup=None,
+            )
+    except TelegramError as exc:
+        LOGGER.error("Failed to edit payment review message %s: %s", order_id, exc)
+
+    # уведомляем студента
+    try:
+        await context.bot.send_message(order.user_id, user_text)
+    except Forbidden:
+        LOGGER.warning("Cannot notify user %s about payment decision %s", order.user_id, order_id)
+    except TelegramError as exc:
+        LOGGER.error("Error sending payment decision for order %s: %s", order_id, exc)
+
+    await context.bot.send_message(
+        chat_id=config.group_chat_id,
+        text=f"Статус оплаты заказа #{order_id}: {decision_text}",
+    )
 async def handle_order_accept(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -528,16 +850,22 @@ async def handle_order_accept(
 
     await db.update_order_status(
         order_id,
-        "accepted",
+        "awaiting_payment",
         executor_id=executor.id,
         executor_username=executor.username,
     )
+    await db.update_payment_status(order_id=order_id, status="requested")
+    order.status = "awaiting_payment"
+    order.executor_id = executor.id
+    order.executor_username = executor.username
+    order.payment_status = "requested"
 
     extra_text = (
         f"✅ ЗАКАЗ ПРИНЯТ\nИсполнитель: @{executor.username}"
         if executor.username
         else f"✅ ЗАКАЗ ПРИНЯТ\nИсполнитель: {executor.full_name}"
     )
+    extra_text = f"{extra_text}\n💳 Ожидается подтверждение оплаты."
 
     try:
         await context.bot.edit_message_text(
@@ -557,12 +885,14 @@ async def handle_order_accept(
     except TelegramError as exc:
         LOGGER.error("Error notifying user about accepted order %s: %s", order_id, exc)
 
+    await _send_payment_request_to_student(context=context, order=order)
+
     group_text = DECLINE_REASON_TAKEN.format(
         username=executor.username or executor.full_name,
         order_id=order_id,
         budget=order.budget,
     )
-    await context.bot.send_message(config.group_chat_id, group_text)
+    await context.bot.send_message(config.group_chat_id, f"{group_text}\n💳 Ожидаем квитанцию от студента.")
 
 
 async def handle_order_decline(
@@ -701,6 +1031,230 @@ async def handle_decline_reason_message(
         LOGGER.error("Error notifying user about declined order %s: %s", order_id, exc)
 
 
+async def admin_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    message = update.message
+    if not message or not update.effective_user:
+        return
+
+    if not await _user_is_admin(update.effective_user.id, db):
+        await message.reply_text(ADMIN_ONLY_MESSAGE)
+        return
+
+    await message.reply_text(ADMIN_MENU_MESSAGE, reply_markup=admin_main_keyboard())
+
+
+async def handle_admin_menu_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    if not await _user_is_admin(query.from_user.id, db):
+        await query.answer(ADMIN_ONLY_MESSAGE, show_alert=True)
+        return
+
+    await query.answer()
+    action = query.data.split(":", 1)[1]
+
+    if action == "admins":
+        await query.message.reply_text(
+            "Управление администраторами:",
+            reply_markup=admin_manage_keyboard(),
+        )
+        return
+
+    if action == "stats":
+        stats = await db.get_order_stats()
+        lines = [
+            "📊 Статистика заказов:",
+        ]
+        total = 0
+        for status, count in stats.items():
+            lines.append(f"- {status}: {count}")
+            total += count
+        lines.append(f"Всего заказов: {total}")
+        await query.message.reply_text("\n".join(lines))
+        return
+
+    if action == "broadcast":
+        context.user_data[ADMIN_ACTION_KEY] = "broadcast"
+        await query.message.reply_text(ADMIN_BROADCAST_PROMPT)
+        return
+
+    if action == "orders":
+        orders = await db.list_orders(
+            statuses=("pending", "awaiting_payment", "payment_review", "in_progress"),
+            limit=10,
+        )
+        if not orders:
+            await query.message.reply_text("Нет заказов для отображения.")
+            return
+        lines = ["📄 Последние заказы:"]
+        actionable_ids: List[int] = []
+        for order in orders:
+            lines.append(_format_order_summary(order))
+            if order.status != "completed":
+                actionable_ids.append(order.order_id)
+        await query.message.reply_text(
+            "\n".join(lines),
+            reply_markup=admin_orders_keyboard(actionable_ids),
+        )
+        return
+
+
+async def handle_admin_manage_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    if not await _user_is_admin(query.from_user.id, db):
+        await query.answer(ADMIN_ONLY_MESSAGE, show_alert=True)
+        return
+
+    data = query.data
+    await query.answer()
+
+    if data == "admin_add:start":
+        context.user_data[ADMIN_ACTION_KEY] = "add_admin"
+        await query.message.reply_text(ADMIN_ADD_PROMPT)
+        return
+
+    if data == "admin_remove:start":
+        admins = await db.list_admins()
+        entries = []
+        for admin in admins:
+            label = admin.username or f"{admin.first_name or ''} {admin.last_name or ''}".strip() or str(admin.user_id)
+            entries.append((admin.user_id, label))
+        await query.message.reply_text(
+            ADMIN_REMOVE_PROMPT,
+            reply_markup=admin_remove_keyboard(entries),
+        )
+        return
+
+    if data.startswith("admin_remove:"):
+        target_id = int(data.split(":", 1)[1])
+        if target_id == query.from_user.id:
+            await query.message.reply_text("Нельзя удалить самого себя.")
+            return
+        await db.remove_admin(target_id)
+        await query.message.reply_text(f"Пользователь {target_id} больше не администратор.")
+        return
+
+    if data.startswith("admin_complete:"):
+        order_id = int(data.split(":", 1)[1])
+        order = await db.get_order(order_id)
+        if not order:
+            await query.message.reply_text(ORDER_NOT_FOUND_MESSAGE)
+            return
+        await db.mark_order_completed(order_id)
+        updated_order = await db.get_order(order_id)
+        extra_text = "✅ Работа завершена администратором."
+        if updated_order and updated_order.group_message_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=config.group_chat_id,
+                    message_id=updated_order.group_message_id,
+                    text=format_group_message(updated_order, extra_block=extra_text),
+                    parse_mode=ParseMode.HTML,
+                )
+            except TelegramError as exc:
+                LOGGER.error("Failed to update group message for completion %s: %s", order_id, exc)
+
+        try:
+            await context.bot.send_message(
+                updated_order.user_id if updated_order else order.user_id,
+                ORDER_COMPLETED_USER_MESSAGE.format(order_id=order_id),
+            )
+        except TelegramError:
+            LOGGER.warning("Cannot notify user about completed order %s", order_id)
+
+        await context.bot.send_message(
+            config.group_chat_id,
+            ORDER_COMPLETED_GROUP_MESSAGE.format(order_id=order_id),
+        )
+        await query.message.reply_text(f"Заказ #{order_id} отмечен как выполненный.")
+        return
+
+
+async def handle_admin_text_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    message = update.message
+    user = update.effective_user
+    if not message or not user:
+        return
+
+    action = context.user_data.get(ADMIN_ACTION_KEY)
+    if not action:
+        return
+
+    if not await _user_is_admin(user.id, db):
+        context.user_data.pop(ADMIN_ACTION_KEY, None)
+        return
+
+    if action == "add_admin":
+        text = message.text.strip()
+        if not text.isdigit():
+            await message.reply_text("Укажите числовой ID пользователя.")
+            return
+        new_admin_id = int(text)
+        username = None
+        first_name = None
+        last_name = None
+        try:
+            chat = await context.bot.get_chat(new_admin_id)
+            username = chat.username
+            first_name = chat.first_name
+            last_name = chat.last_name
+        except TelegramError:
+            pass
+        await db.add_admin(
+            user_id=new_admin_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            added_by=user.id,
+        )
+        await message.reply_text(f"Пользователь {new_admin_id} назначен администратором.")
+        context.user_data.pop(ADMIN_ACTION_KEY, None)
+        return
+
+    if action == "broadcast":
+        text = message.text.strip()
+        chat_ids = await db.get_all_user_chat_ids()
+        delivered = 0
+        for chat_id in chat_ids:
+            try:
+                await context.bot.send_message(chat_id, text)
+                delivered += 1
+            except TelegramError:
+                continue
+        await message.reply_text(f"{ADMIN_BROADCAST_DONE} (доставлено: {delivered})")
+        context.user_data.pop(ADMIN_ACTION_KEY, None)
+        return
+
+
 def build_conversation_handler(config: Config, db: Database) -> ConversationHandler:
     """Create the conversation handler with all states."""
     return ConversationHandler(
@@ -774,6 +1328,9 @@ def register_handlers(application: Application, config: Config, db: Database) ->
         CommandHandler("cancel", partial(cancel_command, config=config, db=db))
     )
     application.add_handler(
+        CommandHandler("admin", partial(admin_command, config=config, db=db))
+    )
+    application.add_handler(
         CallbackQueryHandler(
             partial(handle_order_accept, config=config, db=db),
             pattern=r"^order_accept:",
@@ -786,9 +1343,55 @@ def register_handlers(application: Application, config: Config, db: Database) ->
         )
     )
     application.add_handler(
+        CallbackQueryHandler(
+            partial(handle_payment_upload_request, config=config, db=db),
+            pattern=r"^payment_upload:",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            partial(handle_payment_review_callback, config=config, db=db),
+            pattern=r"^payment_review:",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            partial(handle_admin_menu_callback, config=config, db=db),
+            pattern=r"^admin_menu:",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            partial(handle_admin_manage_callback, config=config, db=db),
+            pattern=r"^admin_(?:add|remove|complete):",
+        )
+    )
+    application.add_handler(
         MessageHandler(
             filters.REPLY & filters.ChatType.GROUPS,
             partial(handle_decline_reason_message, config=config, db=db),
+        )
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE
+            & filters.TEXT
+            & ~filters.COMMAND,
+            partial(handle_admin_text_input, config=config, db=db),
+        )
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE
+            & (
+                filters.Document.ALL
+                | filters.PHOTO
+                | filters.VIDEO
+                | filters.AUDIO
+                | filters.VOICE
+                | filters.VIDEO_NOTE
+            ),
+            partial(handle_payment_receipt_submission, config=config, db=db),
         )
     )
     application.add_error_handler(partial(error_handler, config=config, db=db))
