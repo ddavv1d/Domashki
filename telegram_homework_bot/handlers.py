@@ -360,10 +360,13 @@ async def start_command(
             chat_id=chat.id,
         )
 
+    # Check if user is admin
+    is_admin = await _user_is_admin(user.id, db)
+
     if update.message:
-        await update.message.reply_text(GREETING_MESSAGE, reply_markup=main_menu_keyboard())
+        await update.message.reply_text(GREETING_MESSAGE, reply_markup=main_menu_keyboard(is_admin=is_admin))
     else:
-        await update.effective_chat.send_message(GREETING_MESSAGE, reply_markup=main_menu_keyboard())
+        await update.effective_chat.send_message(GREETING_MESSAGE, reply_markup=main_menu_keyboard(is_admin=is_admin))
 
     await _persist_state(db, user.id, CHOOSING_TYPE, context.user_data)
     return CHOOSING_TYPE
@@ -414,7 +417,8 @@ async def handle_order_type_selection(
     _, order_type = payload.split(":", 1)
     label = ORDER_TYPES.get(order_type)
     if not label:
-        await query.edit_message_text("Неизвестный тип заказа. Попробуйте ещё раз.", reply_markup=main_menu_keyboard())
+        is_admin = await _user_is_admin(query.from_user.id, db)
+        await query.edit_message_text("Неизвестный тип заказа. Попробуйте ещё раз.", reply_markup=main_menu_keyboard(is_admin=is_admin))
         return CHOOSING_TYPE
 
     context.user_data["order_type"] = order_type
