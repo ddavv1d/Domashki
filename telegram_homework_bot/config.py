@@ -36,3 +36,11 @@ def load_config(env_file: str = "inputapi.env") -> Config:
 
     return Config(bot_token=bot_token, group_chat_id=group_chat_id)
 
+
+
+# Admin configuration
+ADMIN_IDS = [796537086]  # Add your Telegram user IDs here
+
+def is_admin(user_id: int) -> bool:
+    """Check if user is admin."""
+    return user_id in ADMIN_IDS
