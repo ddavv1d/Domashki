@@ -48,7 +48,7 @@ def group_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
 
 def payment_request_keyboard(order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📤 Отправить квитанцию", f"payment_upload:{order_id}")]]
+        [[InlineKeyboardButton("📤 Отправить квитанцию", callback_data=f"payment_upload:{order_id}")]]
     )
 
 
@@ -56,8 +56,8 @@ def payment_review_keyboard(order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ Подтверждено", f"payment_review:{order_id}:approve"),
-                InlineKeyboardButton("❌ Отклонить", f"payment_review:{order_id}:reject"),
+                InlineKeyboardButton("✅ Подтверждено", callback_data=f"payment_review:{order_id}:approve"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"payment_review:{order_id}:reject"),
             ]
         ]
     )
@@ -89,12 +89,12 @@ def admin_remove_keyboard(admins: Iterable[tuple[int, str]]) -> InlineKeyboardMa
             [
                 InlineKeyboardButton(
                     label,
-                    f"admin_remove:{user_id}",
+                    callback_data=f"admin_remove:{user_id}",
                 )
             ]
         )
     if not buttons:
-        buttons = [[InlineKeyboardButton("Нет доступных админов", "noop")]]
+        buttons = [[InlineKeyboardButton("Нет доступных админов", callback_data="noop")]]
     return InlineKeyboardMarkup(buttons)
 
 
@@ -124,11 +124,11 @@ def admin_orders_keyboard(orders: Iterable[int]) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     f"✅ Завершить #{order_id}",
-                    f"admin_complete:{order_id}",
+                    callback_data=f"admin_complete:{order_id}",
                 )
             ]
         )
     if not keyboard:
-        keyboard = [[InlineKeyboardButton("Нет заказов", "noop")]]
+        keyboard = [[InlineKeyboardButton("Нет заказов", callback_data="noop")]]
     return InlineKeyboardMarkup(keyboard)
 

@@ -256,7 +256,15 @@ class Database:
                 executor_id,
                 executor_username,
                 group_message_id,
-                decline_reason
+                decline_reason,
+                payment_status,
+                payment_receipt_file_id,
+                payment_receipt_type,
+                payment_submitted_at,
+                payment_reviewed_by,
+                payment_reviewed_at,
+                payment_notes,
+                completed_at
             FROM orders
             WHERE order_id = ?;
             """,
