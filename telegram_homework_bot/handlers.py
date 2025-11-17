@@ -1474,7 +1474,48 @@ def register_handlers(application: Application, config: Config, db: Database) ->
             partial(handle_payment_receipt_submission, config=config, db=db),
         )
     )
+    # Fallback handler for lost conversation states (must be last)
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+            partial(handle_fallback_message, config=config, db=db),
+        ),
+        group=1,
+    )
     application.add_error_handler(partial(error_handler, config=config, db=db))
+
+
+async def handle_fallback_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    """Handle messages when conversation state is lost."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    # Check if user has saved state in database
+    saved_state = await db.get_user_state(user.id)
+
+    if saved_state and saved_state.get("state"):
+        # User has a saved state, suggest continuing or restarting
+        await update.message.reply_text(
+            "🔄 <b>Восстановление сеанса</b>\n\n"
+            "Похоже, у вас был незавершенный заказ.\n\n"
+            "Введите /start чтобы начать заново, или продолжите с того места, где остановились.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        # No saved state, suggest starting fresh
+        await update.message.reply_text(
+            "👋 <b>Привет!</b>\n\n"
+            "Я помогу вам оформить заказ на выполнение учебной работы.\n\n"
+            "Нажмите /start чтобы начать.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def error_handler(
