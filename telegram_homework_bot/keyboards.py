@@ -15,6 +15,8 @@ MAIN_MENU_BUTTONS = [
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     """Build the main menu inline keyboard."""
     rows = [[InlineKeyboardButton(text, callback_data=data)] for text, data in MAIN_MENU_BUTTONS]
+    # Add admin button at the end
+    rows.append([InlineKeyboardButton("👤 Войти как админ", callback_data="admin_login")])
     return InlineKeyboardMarkup(rows)
 
 

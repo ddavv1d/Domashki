@@ -1031,6 +1031,27 @@ async def handle_decline_reason_message(
         LOGGER.error("Error notifying user about declined order %s: %s", order_id, exc)
 
 
+async def handle_admin_login_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    config: Config,
+    db: Database,
+) -> None:
+    """Handle admin login button from main menu."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+
+    await query.answer()
+
+    if not await _user_is_admin(query.from_user.id, db):
+        await query.message.reply_text(ADMIN_ONLY_MESSAGE)
+        return
+
+    await query.message.reply_text(ADMIN_MENU_MESSAGE, reply_markup=admin_main_keyboard())
+
+
 async def admin_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1352,6 +1373,12 @@ def register_handlers(application: Application, config: Config, db: Database) ->
         CallbackQueryHandler(
             partial(handle_payment_review_callback, config=config, db=db),
             pattern=r"^payment_review:",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            partial(handle_admin_login_callback, config=config, db=db),
+            pattern=r"^admin_login$",
         )
     )
     application.add_handler(
