@@ -69,16 +69,16 @@ def admin_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("👥 Управление администраторами", "admin_menu:admins"),
+                InlineKeyboardButton("👥 Управление администраторами", callback_data="admin_menu:admins"),
             ],
             [
-                InlineKeyboardButton("📊 Статистика заказов", "admin_menu:stats"),
+                InlineKeyboardButton("📊 Статистика заказов", callback_data="admin_menu:stats"),
             ],
             [
-                InlineKeyboardButton("📢 Отправить объявление", "admin_menu:broadcast"),
+                InlineKeyboardButton("📢 Отправить объявление", callback_data="admin_menu:broadcast"),
             ],
             [
-                InlineKeyboardButton("📄 Заказы и статусы", "admin_menu:orders"),
+                InlineKeyboardButton("📄 Заказы и статусы", callback_data="admin_menu:orders"),
             ],
         ]
     )
@@ -106,13 +106,13 @@ def admin_manage_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     "➕ Добавить администратора",
-                    "admin_add:start",
+                    callback_data="admin_add:start",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "➖ Удалить администратора",
-                    "admin_remove:start",
+                    callback_data="admin_remove:start",
                 )
             ],
         ]
