@@ -118,13 +118,30 @@ DECLINE_REASON_TAKEN = (
 GENERIC_ERROR_MESSAGE = (
     "Произошла непредвиденная ошибка. Попробуйте ещё раз позже или начните заново с /start."
 )
-ADMIN_ONLY_MESSAGE = "У вас нет прав администратора."
-ADMIN_MENU_MESSAGE = "Добро пожаловать в панель администратора. Выберите действие:"
-ADMIN_BROADCAST_PROMPT = "Введите текст объявления. Оно будет отправлено всем пользователям бота."
-ADMIN_BROADCAST_DONE = "✅ Объявление разослано."
-ADMIN_ADD_PROMPT = "Введите ID пользователя, которого хотите сделать администратором."
-ADMIN_REMOVE_PROMPT = "Выберите администратора для удаления."
-ADMIN_ORDER_PROMPT = "Последние заказы. Нажмите на кнопку, чтобы отметить заказ выполненным."
+ADMIN_ONLY_MESSAGE = "🚫 <b>Доступ запрещен</b>\n\nУ вас нет прав администратора."
+ADMIN_MENU_MESSAGE = (
+    "🔐 <b>ПАНЕЛЬ АДМИНИСТРАТОРА</b>\n\n"
+    "Добро пожаловать! Выберите нужный раздел:"
+)
+ADMIN_BROADCAST_PROMPT = (
+    "📢 <b>Рассылка объявления</b>\n\n"
+    "Введите текст объявления, которое будет отправлено <b>всем пользователям</b> бота.\n\n"
+    "💡 <i>Можно использовать форматирование: жирный, курсив, код</i>"
+)
+ADMIN_BROADCAST_DONE = "✅ <b>Объявление успешно разослано!</b>"
+ADMIN_ADD_PROMPT = (
+    "➕ <b>Добавление администратора</b>\n\n"
+    "Введите <b>Telegram ID</b> пользователя, которого хотите сделать администратором.\n\n"
+    "💡 <i>ID можно узнать через @userinfobot</i>"
+)
+ADMIN_REMOVE_PROMPT = (
+    "➖ <b>Удаление администратора</b>\n\n"
+    "Выберите администратора для удаления из списка ниже:"
+)
+ADMIN_ORDER_PROMPT = (
+    "📄 <b>Управление заказами</b>\n\n"
+    "Нажмите на кнопку, чтобы отметить заказ как <b>выполненный</b>:"
+)
 ORDER_COMPLETED_USER_MESSAGE = (
     "✅ Ваш заказ #{order_id} отмечен как выполненный. Спасибо, что воспользовались ботом!"
 )
@@ -1050,10 +1067,14 @@ async def handle_admin_login_callback(
     await query.answer()
 
     if not await _user_is_admin(query.from_user.id, db):
-        await query.message.reply_text(ADMIN_ONLY_MESSAGE)
+        await query.message.reply_text(ADMIN_ONLY_MESSAGE, parse_mode=ParseMode.HTML)
         return
 
-    await query.message.reply_text(ADMIN_MENU_MESSAGE, reply_markup=admin_main_keyboard())
+    await query.message.reply_text(
+        ADMIN_MENU_MESSAGE,
+        reply_markup=admin_main_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def admin_command(
@@ -1068,10 +1089,14 @@ async def admin_command(
         return
 
     if not await _user_is_admin(update.effective_user.id, db):
-        await message.reply_text(ADMIN_ONLY_MESSAGE)
+        await message.reply_text(ADMIN_ONLY_MESSAGE, parse_mode=ParseMode.HTML)
         return
 
-    await message.reply_text(ADMIN_MENU_MESSAGE, reply_markup=admin_main_keyboard())
+    await message.reply_text(
+        ADMIN_MENU_MESSAGE,
+        reply_markup=admin_main_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def handle_admin_menu_callback(
@@ -1092,29 +1117,49 @@ async def handle_admin_menu_callback(
     await query.answer()
     action = query.data.split(":", 1)[1]
 
+    if action == "back":
+        await query.edit_message_text(
+            ADMIN_MENU_MESSAGE,
+            reply_markup=admin_main_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     if action == "admins":
         await query.message.reply_text(
-            "Управление администраторами:",
+            "👥 <b>Управление администраторами</b>\n\nВыберите действие:",
             reply_markup=admin_manage_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
         return
 
     if action == "stats":
         stats = await db.get_order_stats()
+
+        status_emoji = {
+            "pending": "⏳",
+            "awaiting_payment": "💳",
+            "payment_review": "🔍",
+            "in_progress": "🔄",
+            "completed": "✅",
+            "declined": "❌",
+        }
+
         lines = [
-            "📊 Статистика заказов:",
+            "📊 <b>СТАТИСТИКА ЗАКАЗОВ</b>\n",
         ]
         total = 0
         for status, count in stats.items():
-            lines.append(f"- {status}: {count}")
+            emoji = status_emoji.get(status, "•")
+            lines.append(f"{emoji} <b>{status}:</b> {count}")
             total += count
-        lines.append(f"Всего заказов: {total}")
-        await query.message.reply_text("\n".join(lines))
+        lines.append(f"\n<b>📈 Всего заказов: {total}</b>")
+        await query.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
         return
 
     if action == "broadcast":
         context.user_data[ADMIN_ACTION_KEY] = "broadcast"
-        await query.message.reply_text(ADMIN_BROADCAST_PROMPT)
+        await query.message.reply_text(ADMIN_BROADCAST_PROMPT, parse_mode=ParseMode.HTML)
         return
 
     if action == "orders":
@@ -1123,17 +1168,21 @@ async def handle_admin_menu_callback(
             limit=10,
         )
         if not orders:
-            await query.message.reply_text("Нет заказов для отображения.")
+            await query.message.reply_text(
+                "📭 <b>Нет активных заказов</b>\n\nВсе заказы обработаны.",
+                parse_mode=ParseMode.HTML,
+            )
             return
-        lines = ["📄 Последние заказы:"]
+        lines = [ADMIN_ORDER_PROMPT, ""]
         actionable_ids: List[int] = []
         for order in orders:
-            lines.append(_format_order_summary(order))
+            lines.append(f"• {_format_order_summary(order)}")
             if order.status != "completed":
                 actionable_ids.append(order.order_id)
         await query.message.reply_text(
             "\n".join(lines),
             reply_markup=admin_orders_keyboard(actionable_ids),
+            parse_mode=ParseMode.HTML,
         )
         return
 

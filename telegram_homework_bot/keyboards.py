@@ -98,6 +98,8 @@ def admin_remove_keyboard(admins: Iterable[tuple[int, str]]) -> InlineKeyboardMa
         )
     if not buttons:
         buttons = [[InlineKeyboardButton("Нет доступных админов", callback_data="noop")]]
+    # Add back button
+    buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_menu:admins")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -114,6 +116,12 @@ def admin_manage_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     "➖ Удалить администратора",
                     callback_data="admin_remove:start",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "◀️ Назад в меню",
+                    callback_data="admin_menu:back",
                 )
             ],
         ]
@@ -133,5 +141,7 @@ def admin_orders_keyboard(orders: Iterable[int]) -> InlineKeyboardMarkup:
         )
     if not keyboard:
         keyboard = [[InlineKeyboardButton("Нет заказов", callback_data="noop")]]
+    # Add back button
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="admin_menu:back")])
     return InlineKeyboardMarkup(keyboard)
 
